@@ -1,7 +1,7 @@
 import os
 import json
-import pickle
 import joblib
+import pickle
 import pandas as pd
 from flask import Flask, jsonify, request
 from peewee import (
@@ -11,13 +11,7 @@ from peewee import (
 from playhouse.shortcuts import model_to_dict
 from playhouse.db_url import connect
 
-
-########################################
-# Begin database stuff
-
-# The connect function checks if there is a DATABASE_URL env var.
-# If it exists, it uses it to connect to a remote postgres db.
-# Otherwise, it connects to a local sqlite db stored in predictions.db.
+# Database config
 DB = connect(os.environ.get('DATABASE_URL') or 'sqlite:///predictions.db')
 
 class Prediction(Model):
@@ -29,61 +23,69 @@ class Prediction(Model):
     class Meta:
         database = DB
 
-
 DB.create_tables([Prediction], safe=True)
 
-# End database stuff
-########################################
+# Load models and data
+model_A = joblib.load("model_compA.pkl")
+model_B = joblib.load("model_compB.pkl")
+prices = pd.read_csv("data/product_prices_leaflets.csv")
 
-########################################
-# Unpickle the previously-trained model
+# Preprocess price data
+prices = prices[prices["discount"] >= 0].copy()
+prices["final_price"] = prices["pvp_was"] * (1 - prices["discount"])
+prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
 
-
-with open('columns.json') as fh:
-    columns = json.load(fh)
-
-pipeline = joblib.load('pipeline.pickle')
-
-with open('dtypes.pickle', 'rb') as fh:
-    dtypes = pickle.load(fh)
-
-
-# End model un-pickling
-########################################
-
-
-########################################
-# Begin webserver stuff
-
+# Create Flask app
 app = Flask(__name__)
 
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    # Flask provides a deserialization convenience function called
-    # get_json that will work if the mimetype is application/json.
-    obs_dict = request.get_json()
-    _id = obs_dict['id']
-    observation = obs_dict['observation']
-    # Now do what we already learned in the notebooks about how to transform
-    # a single observation into a dataframe that will work with a pipeline.
-    obs = pd.DataFrame([observation], columns=columns).astype(dtypes)
-    # Now get ourselves an actual prediction of the positive class.
-    proba = pipeline.predict_proba(obs)[0, 1]
-    response = {'proba': proba}
-    p = Prediction(
-        observation_id=_id,
-        proba=proba,
-        observation=request.data
-    )
+@app.route('/forecast_prices/', methods=['POST'])
+def forecast_prices():
     try:
-        p.save()
-    except IntegrityError:
-        error_msg = f'Observation ID {_id} already exists'
-        response['error'] = error_msg
-        print(error_msg)
-        DB.rollback()
-    return jsonify(response)
+        payload = request.get_json()
+        sku = int(payload['sku'])
+        time_key = int(payload['time_key'])
+        target_date = pd.to_datetime(str(time_key), format="%Y%m%d")
+    except Exception:
+        return jsonify({"error": "Invalid input format"}), 422
+
+    # Filter data for SKU
+    df = prices[prices["sku"] == sku]
+    df = df[df["competitor"].isin(["competitorA", "competitorB"])]
+    if df.empty:
+        return jsonify({"error": "SKU not found"}), 422
+
+    df = df.pivot_table(index="date", columns="competitor", values="final_price").sort_index()
+    if "competitorA" not in df.columns or "competitorB" not in df.columns:
+        return jsonify({"error": "Missing competitor data"}), 422
+
+    df = df.rename(columns={"competitorA": "price_A", "competitorB": "price_B"})
+
+    # Create lag and rolling features
+    history = df[df.index < target_date].copy()
+    for lag in [1, 3, 7]:
+        history[f"price_A_lag_{lag}"] = history["price_A"].shift(lag)
+        history[f"price_B_lag_{lag}"] = history["price_B"].shift(lag)
+        history[f"price_A_roll_{lag}"] = history["price_A"].rolling(lag).mean()
+        history[f"price_B_roll_{lag}"] = history["price_B"].rolling(lag).mean()
+
+    history = history.dropna()
+    if history.empty:
+        return jsonify({"error": "Not enough historical data"}), 422
+
+    # Extract last row of features
+    features = history.iloc[-1:].drop(columns=["price_A", "price_B"])
+
+    # Predict using both models
+    pred_A = float(model_A.predict(features)[0])
+    pred_B = float(model_B.predict(features)[0])
+
+    return jsonify({
+        "sku": sku,
+        "time_key": time_key,
+        "pvp_is_competitorA": round(pred_A, 2),
+        "pvp_is_competitorB": round(pred_B, 2)
+    })
 
 
 @app.route('/update', methods=['POST'])
@@ -95,19 +97,14 @@ def update():
         p.save()
         return jsonify(model_to_dict(p))
     except Prediction.DoesNotExist:
-        error_msg = f'Observation ID {obs['id']} does not exist'
-        return jsonify({'error': error_msg})
+        return jsonify({'error': f"Observation ID {obs['id']} does not exist"})
 
 
 @app.route('/list-db-contents')
 def list_db_contents():
-    return jsonify([
-        model_to_dict(obs) for obs in Prediction.select()
-    ])
+    return jsonify([model_to_dict(obs) for obs in Prediction.select()])
 
-
-# End webserver stuff
-########################################
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', debug=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
