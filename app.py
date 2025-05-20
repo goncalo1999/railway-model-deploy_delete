@@ -36,7 +36,7 @@ prices = pd.read_csv("data/product_prices_leaflets.csv")
 # Preprocess price data
 # prices = prices[prices["discount"] >= 0].copy()
 # prices["final_price"] = prices["pvp_was"] * (1 - prices["discount"])
-# prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
+prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
 
 # Create Flask app
 app = Flask(__name__)
@@ -99,7 +99,8 @@ def forecast_prices():
             pvp_is_competitorB=round(pred_B, 2),
         )
     except IntegrityError:
-        return jsonify({f'sku and time_key already exists'})
+        return jsonify({"error": "sku and time_key already exists"})
+
 
     return jsonify({
         "sku": str(sku),
