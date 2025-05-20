@@ -34,9 +34,9 @@ model_B = joblib.load("model_compB.pkl")
 prices = pd.read_csv("data/product_prices_leaflets.csv")
 
 # Preprocess price data
-prices = prices[prices["discount"] >= 0].copy()
-prices["final_price"] = prices["pvp_was"] * (1 - prices["discount"])
-prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
+# prices = prices[prices["discount"] >= 0].copy()
+# prices["final_price"] = prices["pvp_was"] * (1 - prices["discount"])
+# prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
 
 # Create Flask app
 app = Flask(__name__)
@@ -149,55 +149,54 @@ if __name__ == "__main__":
     app.run(host='0.0.0.0', port=port, debug=False)
 
 
-import click
 from peewee import IntegrityError
 
-@app.cli.command("populate-db")
-def populate_db():
-    """Populate the Prediction table from CSV and models."""
-    prices = pd.read_csv("data/product_prices_leaflets.csv")
-    prices = prices[prices["discount"] >= 0].copy()
-    prices["final_price"] = prices["pvp_was"] * (1 - prices["discount"])
-    prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
+# @app.cli.command("populate-db")
+# def populate_db():
+#     """Populate the Prediction table from CSV and models."""
+#     prices = pd.read_csv("data/product_prices_leaflets.csv")
+#     prices = prices[prices["discount"] >= 0].copy()
+#     prices["final_price"] = prices["pvp_was"] * (1 - prices["discount"])
+#     prices["date"] = pd.to_datetime(prices["time_key"].astype(str), format="%Y%m%d")
 
-    skus = prices["sku"].unique()
+#     skus = prices["sku"].unique()
 
-    for sku in skus:
-        df = prices[(prices["sku"] == sku) & (prices["competitor"].isin(["competitorA", "competitorB"]))]
-        if df.empty:
-            continue
+#     for sku in skus:
+#         df = prices[(prices["sku"] == sku) & (prices["competitor"].isin(["competitorA", "competitorB"]))]
+#         if df.empty:
+#             continue
 
-        df = df.pivot_table(index="date", columns="competitor", values="final_price").sort_index()
-        if "competitorA" not in df.columns or "competitorB" not in df.columns:
-            continue
+#         df = df.pivot_table(index="date", columns="competitor", values="final_price").sort_index()
+#         if "competitorA" not in df.columns or "competitorB" not in df.columns:
+#             continue
 
-        df = df.rename(columns={"competitorA": "price_A", "competitorB": "price_B"})
-        df["final_price"] = df["price_A"]
+#         df = df.rename(columns={"competitorA": "price_A", "competitorB": "price_B"})
+#         df["final_price"] = df["price_A"]
 
-        for lag in [1, 3, 7]:
-            df[f"final_price_lag_{lag}"] = df["final_price"].shift(lag)
-            df[f"final_price_roll_{lag}"] = df["final_price"].rolling(lag).mean()
+#         for lag in [1, 3, 7]:
+#             df[f"final_price_lag_{lag}"] = df["final_price"].shift(lag)
+#             df[f"final_price_roll_{lag}"] = df["final_price"].rolling(lag).mean()
 
-        df = df.dropna()
+#         df = df.dropna()
 
-        for date, row in df.iterrows():
-            time_key = int(date.strftime("%Y%m%d"))
-            features = row[[col for col in df.columns if col.startswith("final_price_")]].to_frame().T
+#         for date, row in df.iterrows():
+#             time_key = int(date.strftime("%Y%m%d"))
+#             features = row[[col for col in df.columns if col.startswith("final_price_")]].to_frame().T
 
-            pred_A = float(model_A.predict(features)[0])
-            pred_B = float(model_B.predict(features)[0])
+#             pred_A = float(model_A.predict(features)[0])
+#             pred_B = float(model_B.predict(features)[0])
 
-            try:
-                Prediction.create(
-                    sku=str(sku),
-                    time_key=time_key,
-                    pvp_is_competitorA=pred_A,
-                    pvp_is_competitorB=pred_B,
-                )
-            except IntegrityError:
-                pass
+#             try:
+#                 Prediction.create(
+#                     sku=str(sku),
+#                     time_key=time_key,
+#                     pvp_is_competitorA=pred_A,
+#                     pvp_is_competitorB=pred_B,
+#                 )
+#             except IntegrityError:
+#                 pass
 
-    print("Database populated with predictions.")
+#     print("Database populated with predictions.")
 
 @app.cli.command("reset-db")
 def reset_db():
